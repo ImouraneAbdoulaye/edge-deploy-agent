@@ -21,7 +21,9 @@ from edge_deploy_agent.evaluation import ALL_CONFIGS, scenarios, score
 from edge_deploy_agent.tools.deploy import MODEL_DATASET, ROOT
 
 RESULTS = ROOT / "artifacts" / "eval" / "results.jsonl"
-QUOTA_MARKERS = ("rate_limit_exceeded", "tokens per day", "Rate limit reached")
+# Daily quotas stop the evaluation (resume later). A single request larger than the
+# per-minute cap (HTTP 413) cannot succeed by waiting: it is recorded as a failed run.
+DAILY_QUOTA_MARKERS = ("tokens per day", "(TPD)", "requests per day", "(RPD)")
 
 
 def done_keys() -> set[tuple]:
@@ -69,7 +71,7 @@ def main() -> None:
                   f"(baseline {record['baseline_deployments']}), {record['seconds']} s")  # fmt: skip
         except Exception as exc:  # noqa: BLE001 - recorded, the evaluation goes on
             message = f"{type(exc).__name__}: {exc}"
-            if any(marker in message for marker in QUOTA_MARKERS):
+            if any(marker in message for marker in DAILY_QUOTA_MARKERS):
                 print(f"Provider quota reached, stopping. Resume later with the same command.\n{message[:300]}")
                 break
             record.update(status="error", error=message[:2000], traceback=traceback.format_exc()[-2000:])

@@ -32,6 +32,7 @@ def main() -> None:
         ),
         "|---|---|---|---|---|---|---|---|---|",
     ]
+    # Correct = share of all runs (errors count as failures); other columns average successful runs.
     for (llm, kind), runs in sorted(groups.items()):
         ok = [r for r in runs if r["status"] == "ok"]
         errors = len(runs) - len(ok)
@@ -40,7 +41,7 @@ def main() -> None:
             continue
         extraction = [r["extraction_correct"] for r in ok if r["extraction_correct"] is not None]
         lines.append(
-            f"| {llm} | {kind} | {len(runs)} | {pct([r['correct'] for r in ok])} "
+            f"| {llm} | {kind} | {len(runs)} | {pct([r.get('correct', False) for r in runs])} "
             f"| {pct(extraction) if extraction else 'n/a'} "
             f"| {mean(r['num_deployments'] for r in ok):.1f} / {mean(r['baseline_deployments'] for r in ok):.1f} "
             f"| {mean(r['input_tokens'] + r['output_tokens'] for r in ok) / 1000:.1f} k "
