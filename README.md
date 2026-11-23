@@ -87,5 +87,6 @@ python scripts/baseline.py               # brute-force baseline, both backends
 - [x] Qualia-CodeGen backend: PyTorch → C (float32 / int16 / int8), host-measured accuracy and memory
 - [x] Reference models and brute-force baseline
 - [x] LangGraph agent: plan → act → observe loop with tool calling and memory of past attempts
-- [ ] Retrieval over MCU datasheets (RAG) to derive memory budgets from real chips
+- [ ] Retrieval over MCU datasheets (RAG) to derive memory budgets from real chips (NXP MCX N947, i.MX RT1060, LPC55S69, ST STM32L476, RAK3172 / STM32WLE5)
+- [ ] Bring your own model: a `.pt` (Qualia backend), a `.keras` (TFLite backend) or both, plus a `.npz` test set; the agent only uses the backends available for that model (supported layers: Conv1D/2D, Dense, pooling, BatchNorm, ReLU, ...)
 - [ ] Evaluation harness: success rate, iterations, tokens and time vs. baseline, across LLMs
