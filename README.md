@@ -91,7 +91,7 @@ python scripts/run_agent.py mnist_cnn_small tiny      # generic target
 python scripts/run_agent.py mnist_cnn_small tiny --provider ollama --llm qwen2.5:3b   # fully local
 ```
 
-Real-chip targets need the datasheets, which are not versioned (copyright): download them from the vendors' sites into `data/datasheets/` (file names in [`configs/chips.yaml`](configs/chips.yaml)), then:
+Real-chip targets need the datasheets, which are not versioned: download them from the vendors' sites into `data/datasheets/` (file names in [`configs/chips.yaml`](configs/chips.yaml)), then:
 
 ```bash
 python scripts/build_index.py                         # ~2 min on CPU, ~2,000 chunks
