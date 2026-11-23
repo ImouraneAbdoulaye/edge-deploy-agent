@@ -1,0 +1,18 @@
+# Memory budgets available to the model on each deployment target, i.e. what is
+# left after the application firmware, RTOS and buffers. These generic profiles
+# are placeholders: on day 3 the agent will derive them from real MCU datasheets
+# (RAG) instead of reading this file.
+# Accuracy is not a target property: each scenario allows a maximum drop
+# relative to the float32 model (see check_constraints).
+tiny:
+  description: Low-end Cortex-M0+/M4 class, few hundred KB of flash
+  flash_budget_kb: 64
+  ram_budget_kb: 16
+small:
+  description: Mid-range Cortex-M4/M33 class
+  flash_budget_kb: 256
+  ram_budget_kb: 64
+medium:
+  description: High-end Cortex-M7/M33 class with MB of flash
+  flash_budget_kb: 1024
+  ram_budget_kb: 256
