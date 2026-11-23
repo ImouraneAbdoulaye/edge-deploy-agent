@@ -23,7 +23,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.tools import StructuredTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from edge_deploy_agent.agent.scenario import Scenario, options_description
 
@@ -94,6 +94,7 @@ class AgentState(TypedDict):
     answer: dict[str, Any] | None
     steps: int
     tool_call_errors: Annotated[int, operator.add]
+    invalid_args: Annotated[int, operator.add]
 
 
 PRUNED = "[search results removed from context once the memory budget was accepted]"
@@ -183,44 +184,49 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
 
     def run_tools(state: AgentState) -> dict[str, Any]:
         last: AIMessage = state["messages"][-1]
-        messages, new_attempts, answer = [], [], None
+        messages, new_attempts, answer, invalid_args = [], [], None, 0
         tried = {(a["backend"], a["mode"]): a for a in state["attempts"]}
         for call in last.tool_calls:
             name, args = call["name"], call["args"]
-            if name == "inspect_model":
-                result: Any = scenario.inspect()
-            elif name == "deploy_and_check":
-                key = (args.get("backend"), args.get("mode"))
-                if key in tried:
-                    result = {**tried[key], "note": "already measured, not redeployed"}
-                else:
-                    result = scenario.deploy_and_check(*key)
+            try:
+                if name == "inspect_model":
+                    result: Any = scenario.inspect()
+                elif name == "deploy_and_check":
+                    key = (args.get("backend"), args.get("mode"))
+                    if key in tried:
+                        result = {**tried[key], "note": "already measured, not redeployed"}
+                    else:
+                        result = scenario.deploy_and_check(*key)
+                        if "error" not in result:
+                            new_attempts.append(result)
+                            tried[key] = result
+                elif name == "search_datasheet":
+                    result = scenario.search_datasheet(args["query"])
+                elif name == "set_memory_budget":
+                    result = scenario.set_memory_budget(**BudgetArgs(**args).model_dump())
                     if "error" not in result:
-                        new_attempts.append(result)
-                        tried[key] = result
-            elif name == "search_datasheet":
-                result = scenario.search_datasheet(args["query"])
-            elif name == "set_memory_budget":
-                result = scenario.set_memory_budget(**BudgetArgs(**args).model_dump())
-                if "error" not in result:
-                    messages.extend(_prune_search_results(state["messages"]))
-            elif name == "submit_answer":
-                submitted = AnswerArgs(**{k: v if v is not None else "none" for k, v in args.items()}).model_dump()
-                for key in ("backend", "mode"):
-                    if str(submitted[key]).lower() in ("none", "null", ""):
-                        submitted[key] = None
-                fitting = {(a["backend"], a["mode"]) for a in tried.values() if a.get("fits")}
-                if submitted["feasible"] and (submitted["backend"], submitted["mode"]) not in fitting:
-                    result = {"error": "rejected: a feasible answer must set the `backend` and `mode` fields to a "
-                              "configuration you measured as fitting, e.g. "
-                              + " or ".join(f'backend="{b}", mode="{m}"' for b, m in sorted(fitting))}
+                        messages.extend(_prune_search_results(state["messages"]))
+                elif name == "submit_answer":
+                    submitted = AnswerArgs(**{k: v if v is not None else "none" for k, v in args.items()}).model_dump()
+                    for key in ("backend", "mode"):
+                        if str(submitted[key]).lower() in ("none", "null", ""):
+                            submitted[key] = None
+                    fitting = {(a["backend"], a["mode"]) for a in tried.values() if a.get("fits")}
+                    if submitted["feasible"] and (submitted["backend"], submitted["mode"]) not in fitting:
+                        result = {"error": "rejected: a feasible answer must set the `backend` and `mode` fields to a "
+                                  "configuration you measured as fitting, e.g. "
+                                  + " or ".join(f'backend="{b}", mode="{m}"' for b, m in sorted(fitting))}
+                    else:
+                        answer = submitted
+                        result = "Answer recorded."
                 else:
-                    answer = submitted
-                    result = "Answer recorded."
-            else:
-                result = {"error": f"unknown tool {name}"}
+                    result = {"error": f"unknown tool {name}"}
+            except (ValidationError, KeyError, TypeError) as exc:
+                # Malformed arguments (common with small models): report them so the model can fix the call.
+                invalid_args += 1
+                result = {"error": f"invalid arguments for {name}: {exc}"}
             messages.append(ToolMessage(json.dumps(result), tool_call_id=call["id"], name=name))
-        return {"messages": messages, "attempts": new_attempts, "answer": answer}
+        return {"messages": messages, "attempts": new_attempts, "answer": answer, "invalid_args": invalid_args}
 
     def after_agent(state: AgentState) -> str:
         last = state["messages"][-1]
@@ -254,7 +260,7 @@ def run_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10) -> di
     start = time.perf_counter()
     state = app.invoke(
         {"messages": [HumanMessage(scenario.brief())], "attempts": [], "answer": None, "steps": 0,
-         "tool_call_errors": 0},
+         "tool_call_errors": 0, "invalid_args": 0},
         {"recursion_limit": 4 * max_steps + 5},
     )
     usage = [m.usage_metadata for m in state["messages"] if isinstance(m, AIMessage) and m.usage_metadata]
@@ -269,6 +275,7 @@ def run_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10) -> di
         "num_deployments": len(state["attempts"]),
         "llm_calls": state["steps"],
         "tool_call_errors": state["tool_call_errors"],
+        "invalid_args": state["invalid_args"],
         "input_tokens": sum(u["input_tokens"] for u in usage),
         "output_tokens": sum(u["output_tokens"] for u in usage),
         "seconds": round(time.perf_counter() - start, 1),
