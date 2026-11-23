@@ -5,7 +5,7 @@
                +-----------------------+
 
 Memory: every deployment result is stored in the graph state (``attempts``) and
-re-injected into the prompt as a compact table at each step, so the model reasons
+re-injected into the system prompt as a compact table at each step, so the model reasons
 over what it has already measured instead of re-reading the whole transcript.
 Asking for a configuration that was already measured returns the stored result
 without redeploying.
@@ -34,6 +34,12 @@ Available deployment options:
 {options}
 
 How to work:
+0. If the target is a microcontroller whose memory sizes are not given, search its datasheet \
+first. Datasheets often cover several part numbers: decode the exact part number with the \
+datasheet's ordering information scheme (each character encodes an option, often the memory \
+size) and make sure the flash and SRAM values apply to that exact part. Use the usable on-chip \
+flash (some is sometimes reserved), the total SRAM, and external flash only when there is no \
+on-chip flash. Call `set_memory_budget`, citing the source pages, before any deployment.
 1. Inspect the model first and estimate, for each option, whether the weights (flash) and \
 activations (RAM) can fit the budgets. Write this reasoning down briefly.
 2. Each deployment is expensive (conversion, compilation, evaluation on the test set). Only \
@@ -46,9 +52,23 @@ weights exceed the flash budget). Give a short, quantitative justification.
 """
 
 
+MAX_TOOL_CALL_RETRIES = 2
+
+
 class DeployArgs(BaseModel):
     backend: Literal["tflite", "qualia"] = Field(description="Deployment backend")
     mode: str = Field(description="Quantization mode, must be one of the backend's modes")
+
+
+class SearchArgs(BaseModel):
+    query: str = Field(description="What to look for, e.g. 'ordering information flash memory size'")
+
+
+class BudgetArgs(BaseModel):
+    flash_kb: float = Field(description="Usable on-chip flash of this exact part in KB (0 if none)")
+    sram_kb: float = Field(description="Total on-chip SRAM of this exact part in KB")
+    internal_flash: bool = Field(description="False if the chip has no on-chip flash")
+    evidence: str = Field(description="Quote or summary of the datasheet lines used, with source pages")
 
 
 class AnswerArgs(BaseModel):
@@ -63,6 +83,7 @@ class AgentState(TypedDict):
     attempts: Annotated[list[dict[str, Any]], operator.add]
     answer: dict[str, Any] | None
     steps: int
+    tool_call_errors: Annotated[int, operator.add]
 
 
 def _attempts_table(attempts: list[dict[str, Any]]) -> str:
@@ -94,13 +115,45 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
             description="Submit the final answer and stop.",
         ),
     ]  # fmt: skip
+    if getattr(scenario, "chip", None):
+        tools += [
+            StructuredTool.from_function(
+                func=lambda query: None, name="search_datasheet", args_schema=SearchArgs,
+                description="Search the target chip's datasheets. Returns the 5 most relevant passages "
+                            "with their source page.",
+            ),
+            StructuredTool.from_function(
+                func=lambda **kw: None, name="set_memory_budget", args_schema=BudgetArgs,
+                description="Declare the chip memory found in the datasheet; returns the model's flash "
+                            "and RAM budgets. Required before any deployment.",
+            ),
+        ]  # fmt: skip
     llm_with_tools = llm.bind_tools(tools)
     system = SYSTEM_PROMPT.format(options=options_description())
 
+    tool_names = {t.name for t in tools}
+
     def agent(state: AgentState) -> dict[str, Any]:
-        memory = SystemMessage(f"Deployments measured so far:\n{_attempts_table(state['attempts'])}")
-        response = llm_with_tools.invoke([SystemMessage(system), *state["messages"], memory])
-        return {"messages": [response], "steps": state["steps"] + 1}
+        # Memory goes into the leading system prompt: a system message placed after tool
+        # results breaks some chat formats (gpt-oss then emits malformed tool calls).
+        memory = f"\n\nDeployments measured so far:\n{_attempts_table(state['attempts'])}"
+        prompt = [SystemMessage(system + memory), *state["messages"]]
+        errors = 0
+        # Some models occasionally emit a malformed tool call (e.g. gpt-oss calling a tool named
+        # "json"); the provider rejects it. Tell the model what went wrong and let it retry.
+        for _ in range(MAX_TOOL_CALL_RETRIES + 1):
+            try:
+                response = llm_with_tools.invoke(prompt)
+            except Exception as exc:  # provider-specific error types
+                if not any(code in str(exc) for code in ("tool_use_failed", "output_parse_failed")):
+                    raise
+                errors += 1
+                prompt = [*prompt, HumanMessage(
+                    f"Your last tool call was invalid. Call exactly one of these tools by name: {sorted(tool_names)}."
+                )]  # fmt: skip
+                continue
+            return {"messages": [response], "steps": state["steps"] + 1, "tool_call_errors": errors}
+        raise RuntimeError(f"Model produced {errors} invalid tool calls in a row.")
 
     def run_tools(state: AgentState) -> dict[str, Any]:
         last: AIMessage = state["messages"][-1]
@@ -119,6 +172,10 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
                     if "error" not in result:
                         new_attempts.append(result)
                         tried[key] = result
+            elif name == "search_datasheet":
+                result = scenario.search_datasheet(args["query"])
+            elif name == "set_memory_budget":
+                result = scenario.set_memory_budget(**BudgetArgs(**args).model_dump())
             elif name == "submit_answer":
                 answer = AnswerArgs(**args).model_dump()
                 result = "Answer recorded."
@@ -131,7 +188,11 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
         last = state["messages"][-1]
         if isinstance(last, AIMessage) and last.tool_calls:
             return "tools"
-        return END  # the model answered in plain text without submitting
+        # Plain-text reply without submitting: remind it, within the step budget.
+        return "remind" if state["steps"] < max_steps else END
+
+    def remind(state: AgentState) -> dict[str, Any]:
+        return {"messages": [HumanMessage("Continue with a tool call; finish with `submit_answer`.")]}
 
     def after_tools(state: AgentState) -> str:
         if state["answer"] is not None or state["steps"] >= max_steps:
@@ -141,8 +202,10 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent)
     graph.add_node("tools", run_tools)
+    graph.add_node("remind", remind)
+    graph.add_edge("remind", "agent")
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", after_agent, ["tools", END])
+    graph.add_conditional_edges("agent", after_agent, ["tools", "remind", END])
     graph.add_conditional_edges("tools", after_tools, ["agent", END])
     return graph.compile()
 
@@ -152,7 +215,8 @@ def run_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10) -> di
     app = build_agent(llm, scenario, max_steps)
     start = time.perf_counter()
     state = app.invoke(
-        {"messages": [HumanMessage(scenario.brief())], "attempts": [], "answer": None, "steps": 0},
+        {"messages": [HumanMessage(scenario.brief())], "attempts": [], "answer": None, "steps": 0,
+         "tool_call_errors": 0},
         {"recursion_limit": 4 * max_steps + 5},
     )
     usage = [m.usage_metadata for m in state["messages"] if isinstance(m, AIMessage) and m.usage_metadata]
@@ -160,9 +224,12 @@ def run_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10) -> di
         "model": scenario.model_name,
         "target": scenario.target_name,
         "answer": state["answer"],
+        "extracted_memory": getattr(scenario, "extracted", None),
+        "budget": getattr(scenario, "target", None),
         "attempts": state["attempts"],
         "num_deployments": len(state["attempts"]),
         "llm_calls": state["steps"],
+        "tool_call_errors": state["tool_call_errors"],
         "input_tokens": sum(u["input_tokens"] for u in usage),
         "output_tokens": sum(u["output_tokens"] for u in usage),
         "seconds": round(time.perf_counter() - start, 1),

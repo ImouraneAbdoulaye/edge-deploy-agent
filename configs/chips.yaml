@@ -1,0 +1,51 @@
+# Real microcontrollers the agent can target. The agent only receives the part
+# number: it must find the memory sizes in the datasheets itself (RAG).
+#
+# `datasheets`: files under data/datasheets/ (not versioned, see README).
+# `ground_truth`: checked by hand in those datasheets. Used ONLY to score the
+# agent's extraction, never shown to it.
+#   flash_kb: usable on-chip flash (0 if none), sram_kb: total on-chip SRAM.
+
+STM32WL33C8:
+  vendor: ST
+  datasheets: [DS_stm32wl33c8.pdf]
+  ground_truth: {flash_kb: 64, sram_kb: 16, internal_flash: true}
+  note: "Ordering info: 8 = 64 Kbyte flash / 16 Kbyte RAM (B = 128/32, C = 256/32)."
+
+RAK3172:
+  vendor: RAKwireless (STM32WLE5CC inside)
+  datasheets:
+    - "RAK_Docs_Export_1795435936433/WisDuo - RAK3172 Module - RAK3172 WisDuo LoRaWAN Module Datasheet Specs & Features.pdf"
+    - "RAK_Docs_Export_1795435936433/WisDuo - RAK3172 Module - RAK3172 WisDuo LoRaWAN Module STM32WLE5CCU6-Based.pdf"
+  ground_truth: {flash_kb: 256, sram_kb: 64, internal_flash: true}
+  note: "256 kbytes flash, 64 kbytes RAM. The 512 kB external flash is only on RAK3172-F."
+
+LPC55S66JBD100:
+  vendor: NXP
+  datasheets: [LPC55S6x.pdf]
+  ground_truth: {flash_kb: 256, sram_kb: 144, internal_flash: true}
+  note: "Ordering options table: 256 KB flash, 144 KB total SRAM."
+
+LPC55S69JBD100:
+  vendor: NXP
+  datasheets: [LPC55S6x.pdf]
+  ground_truth: {flash_kb: 630, sram_kb: 320, internal_flash: true}
+  note: "640 KB flash of which the last 10 KB are reserved (630 KB usable), 320 KB SRAM."
+
+STM32L476RG:
+  vendor: ST
+  datasheets: [DS_stm32l476je.pdf]
+  ground_truth: {flash_kb: 1024, sram_kb: 128, internal_flash: true}
+  note: "G = 1 MB of flash; 128 KB SRAM = 96 KB SRAM1 + 32 KB SRAM2."
+
+MCXN947VDFT:
+  vendor: NXP
+  datasheets: [MCXNP184M150F70.pdf]
+  ground_truth: {flash_kb: 2048, sram_kb: 512, internal_flash: true}
+  note: "Ordering table: 2 MB flash, 512 KB SRAM. eIQ Neutron NPU."
+
+MIMXRT1062:
+  vendor: NXP (i.MX RT1060 family)
+  datasheets: [IMXRT1060CEC.pdf]
+  ground_truth: {flash_kb: 0, sram_kb: 1024, internal_flash: false}
+  note: "1 MB on-chip RAM (512 KB FlexRAM + 512 KB OCRAM), no on-chip flash: code runs from external flash over FlexSPI."

@@ -14,6 +14,7 @@ from edge_deploy_agent.tools.evaluate import check_constraints
 from edge_deploy_agent.tools.inspect_model import inspect_model
 
 REFERENCE_CACHE = ROOT / "artifacts" / "reference_accuracy.json"
+_INDEX = None  # DatasheetIndex, loaded lazily
 DEFAULT_MAX_ACCURACY_DROP = 0.01
 
 
@@ -33,33 +34,94 @@ def reference_accuracy(model_name: str, backend: str) -> float:
     return cache[key]
 
 
+# Share of the chip's memory left to the model; the rest is for firmware, stack, buffers.
+MODEL_FLASH_SHARE = 0.5
+MODEL_RAM_SHARE = 0.5
+# Chips without on-chip flash run from external flash (e.g. QSPI/FlexSPI NOR on the board).
+EXTERNAL_FLASH_BUDGET_KB = 4096
+
+BUDGET_POLICY = (
+    f"Memory budget policy: the model may use {MODEL_FLASH_SHARE:.0%} of the usable on-chip flash and "
+    f"{MODEL_RAM_SHARE:.0%} of the total on-chip SRAM. If the chip has no on-chip flash, the model is "
+    f"stored in external flash with a budget of {EXTERNAL_FLASH_BUDGET_KB} KB."
+)
+
+
 @dataclass
 class Scenario:
+    """A model to deploy on a target.
+
+    ``target_name`` is either a generic profile from configs/targets.yaml (budgets
+    given to the agent), or a real chip from configs/chips.yaml: the agent then has
+    to find the chip's memory in its datasheets and declare it with
+    ``set_memory_budget`` before deploying.
+    """
+
     model_name: str
     target_name: str
     max_accuracy_drop: float = DEFAULT_MAX_ACCURACY_DROP
     out_dir: Path = ROOT / "artifacts" / "agent"
-    target: dict[str, Any] = field(init=False)
+    target: dict[str, Any] | None = field(init=False)
+    chip: dict[str, Any] | None = field(init=False)
+    extracted: dict[str, Any] | None = field(init=False, default=None)
     reference: dict[str, float] = field(init=False)
 
     def __post_init__(self) -> None:
-        self.target = load_targets()[self.target_name]
+        from edge_deploy_agent.rag.index import load_chips
+
+        chips = load_chips()
+        self.chip = chips.get(self.target_name)
+        self.target = None if self.chip else load_targets()[self.target_name]
         self.reference = {b: reference_accuracy(self.model_name, b) for b in BACKENDS}
 
     def brief(self) -> str:
         """Task description given to the agent as the first user message."""
         refs = ", ".join(f"{b}: {acc:.3f}" for b, acc in self.reference.items())
+        if self.chip:
+            target_lines = (
+                f"Deploy the model `{self.model_name}` on the microcontroller `{self.target_name}` "
+                f"({self.chip['vendor']}).\n"
+                "- Its memory sizes are not given: find this exact part's usable on-chip flash and total "
+                "SRAM in its datasheet with `search_datasheet`, then declare them with `set_memory_budget`.\n"
+                f"- {BUDGET_POLICY}\n"
+            )
+        else:
+            target_lines = (
+                f"Deploy the model `{self.model_name}` on the target `{self.target_name}` "
+                f"({self.target['description']}).\n"
+                f"- Flash budget for the model: {self.target['flash_budget_kb']} KB\n"
+                f"- RAM budget for the model: {self.target['ram_budget_kb']} KB\n"
+            )
         return (
-            f"Deploy the model `{self.model_name}` on the target `{self.target_name}` "
-            f"({self.target['description']}).\n"
-            f"- Flash budget for the model: {self.target['flash_budget_kb']} KB\n"
-            f"- RAM budget for the model: {self.target['ram_budget_kb']} KB\n"
-            f"- Max accuracy drop vs. the float32 model: {self.max_accuracy_drop:.3f} (absolute)\n"
-            f"- Float32 reference accuracy per backend: {refs}\n"
-            "Find a backend and mode that satisfies all three constraints, or show that none exists."
+            target_lines
+            + f"- Max accuracy drop vs. the float32 model: {self.max_accuracy_drop:.3f} (absolute)\n"
+            + f"- Float32 reference accuracy per backend: {refs}\n"
+            + "Find a backend and mode that satisfies all three constraints, or show that none exists."
         )
 
     # ---- tools -----------------------------------------------------------------
+
+    def search_datasheet(self, query: str) -> list[dict[str, Any]]:
+        from edge_deploy_agent.rag.index import DatasheetIndex
+
+        global _INDEX
+        if _INDEX is None:
+            _INDEX = DatasheetIndex()
+        hits = _INDEX.search(query, chip=self.target_name, k=5)
+        return [{"source": f"{h.doc} p.{h.page}", "text": h.text} for h in hits]
+
+    def set_memory_budget(self, flash_kb: float, sram_kb: float, internal_flash: bool, evidence: str) -> dict:
+        """Record the memory sizes the agent read in the datasheet and derive the model budget."""
+        flash_budget = flash_kb * MODEL_FLASH_SHARE if internal_flash else EXTERNAL_FLASH_BUDGET_KB
+        self.extracted = {
+            "flash_kb": flash_kb, "sram_kb": sram_kb, "internal_flash": internal_flash, "evidence": evidence,
+        }  # fmt: skip
+        self.target = {
+            "description": f"{self.target_name}, from datasheet",
+            "flash_budget_kb": round(flash_budget, 1),
+            "ram_budget_kb": round(sram_kb * MODEL_RAM_SHARE, 1),
+        }
+        return {"model_flash_budget_kb": self.target["flash_budget_kb"], "model_ram_budget_kb": self.target["ram_budget_kb"]}
 
     def inspect(self) -> dict[str, Any]:
         info = inspect_model(ROOT / "models" / f"{self.model_name}.keras")
@@ -83,6 +145,8 @@ class Scenario:
         }
 
     def deploy_and_check(self, backend: str, mode: str) -> dict[str, Any]:
+        if self.target is None:
+            return {"error": "memory budget unknown: find it in the datasheet and call set_memory_budget first"}
         if backend not in BACKENDS:
             return {"error": f"unknown backend {backend!r}, choose from {sorted(BACKENDS)}"}
         if mode not in BACKENDS[backend]["modes"]:
