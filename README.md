@@ -4,7 +4,7 @@ An LLM agent that figures out **how to deploy a neural network on a microcontrol
 
 Built with [LangGraph](https://github.com/langchain-ai/langgraph) and open-weight LLMs (local via [Ollama](https://ollama.com), or [Groq](https://groq.com)'s free tier). No paid API needed.
 
-> Status: work in progress. The deployment tools work; the agent loop, datasheet retrieval and evaluation are being built (see roadmap).
+> Status: work in progress. Tools and agent loop work; datasheet retrieval and the systematic evaluation are being built (see roadmap).
 
 ## Why
 
@@ -51,6 +51,24 @@ Brute force over modes (least aggressive first), accuracy drop ≤ 1 point vs. f
 
 The TFLite RAM estimate for float32 models matches the RAM measured on Qualia's generated buffers (26.4 KB for mnist_cnn_small).
 
+## The agent
+
+A [LangGraph](https://github.com/langchain-ai/langgraph) loop: the LLM reasons, calls a tool (`inspect_model`, `deploy_and_check`, `submit_answer`), observes the result, and repeats until it submits an answer or runs out of steps. Every measured deployment is kept in the graph state and re-injected into the prompt as a table (memory), and asking twice for the same configuration returns the stored result instead of redeploying.
+
+Example runs with `openai/gpt-oss-120b` on Groq's free tier:
+
+| Scenario | Agent | Deployments (agent / brute force TFLite / Qualia) |
+|---|---|---|
+| mnist_cnn_small → tiny | qualia int16, fits | **1** / 4 / 2 |
+| mnist_cnn_medium → tiny | infeasible: ~220 KB of 8-bit weights > 64 KB flash | **0** / 4 / 3 |
+| fashion_mlp_large → medium | tflite dynamic_int8, fits | **1** / 3 / 3 |
+
+```bash
+cp .env.example .env   # then paste a free key from https://console.groq.com/keys
+python scripts/run_agent.py mnist_cnn_small tiny
+python scripts/run_agent.py mnist_cnn_small tiny --provider ollama --llm qwen2.5:7b   # fully local
+```
+
 ## Quick start
 
 ```bash
@@ -68,6 +86,6 @@ python scripts/baseline.py               # brute-force baseline, both backends
 - [x] Deployment tools: inspection, quantization, evaluation, constraint check
 - [x] Qualia-CodeGen backend: PyTorch → C (float32 / int16 / int8), host-measured accuracy and memory
 - [x] Reference models and brute-force baseline
-- [ ] LangGraph agent: plan → act → observe loop with tool calling and memory of past attempts
+- [x] LangGraph agent: plan → act → observe loop with tool calling and memory of past attempts
 - [ ] Retrieval over MCU datasheets (RAG) to derive memory budgets from real chips
 - [ ] Evaluation harness: success rate, iterations, tokens and time vs. baseline, across LLMs

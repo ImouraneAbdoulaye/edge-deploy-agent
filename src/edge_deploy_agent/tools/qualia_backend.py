@@ -13,6 +13,8 @@ model itself (inference code excluded).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import math
 import shutil
 import subprocess
@@ -124,7 +126,7 @@ def compute_activations_range(
 
         weights_q, bias_q = 0, None
         if w is not None:
-            max_wb = max(float(w.abs().max()), float(b.abs().max()) if b is not None else 0.0)
+            max_wb = max(float(w.detach().abs().max()), float(b.detach().abs().max()) if b is not None else 0.0)
             weights_q = _fractional_bits(max_wb, width)
             if accumulator_headroom:
                 acc_bits = math.floor(math.log2(2 * recorder.max_out[node.name] + 1e-12)) + 1
@@ -197,7 +199,8 @@ def convert_qualia(
     shutil.rmtree(c_dir, ignore_errors=True)
     c_dir.mkdir(parents=True)
 
-    graph = TorchModelGraph(model).convert()
+    with contextlib.redirect_stdout(io.StringIO()):  # Qualia prints the traced graph
+        graph = TorchModelGraph(model).convert()
     if not graph:
         raise RuntimeError("Qualia-CodeGen could not trace the model.")
 
