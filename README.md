@@ -31,21 +31,9 @@ What the runs show:
 
 ## How it works
 
-```mermaid
-flowchart LR
-    U[Model + target] --> A
-    subgraph LangGraph agent
-        A[LLM: reason, pick a tool] -->|tool calls| T[Tools]
-        T -->|results + memory table| A
-        A -->|plain text| R[Reminder] --> A
-    end
-    T --- S[search_datasheet<br/>hybrid RAG over PDFs]
-    T --- M[set_memory_budget<br/>grounding check]
-    T --- I[inspect_model]
-    T --- D[deploy_and_check<br/>TFLite / Qualia, measured]
-    T --- F[submit_answer<br/>must be a measured fit]
-    A -->|answer| O[Backend + mode, or infeasible + why]
-```
+![Overall architecture](docs/architecture.svg)
+
+A PNG version for slides is in [`docs/architecture.png`](docs/architecture.png); `python docs/make_architecture.py` regenerates both.
 
 **Agent loop.** The LLM calls one tool at a time and sees its result. Every measured deployment is kept in the graph state and re-injected into the system prompt as a table, and a configuration already measured is served from memory instead of being redeployed. Once the memory declaration is accepted, the datasheet passages are pruned from the context, which keeps later steps small enough for free-tier token caps. Invalid tool calls, malformed arguments and text replies without a tool call are sent back to the model to correct. Generated tokens are capped per call, since small models can loop.
 
