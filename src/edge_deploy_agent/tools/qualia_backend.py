@@ -46,10 +46,14 @@ def load_torch_model(model_path: str | Path) -> nn.Module:
 
 
 def _fractional_bits(max_abs: float, width: int) -> int:
-    """Largest q such that max_abs * 2**q fits in a signed ``width``-bit integer."""
+    """Fractional bits for a symmetric fixed-point tensor whose largest magnitude is ``max_abs``.
+
+    Same rule as qualia-core's ``Quantizer.fractional_bits`` (minmax range setting):
+    ``width - 1 - (floor(log2(max_abs)) + 1)``, and ``width - 2`` for an all-zero tensor.
+    """
     if max_abs == 0:
-        return width - 1
-    return width - 1 - math.ceil(math.log2(max_abs + 1e-12))
+        return width - 2
+    return width - 1 - (math.floor(math.log2(max_abs)) + 1)
 
 
 class _RangeRecorder(fx.Interpreter):
@@ -72,22 +76,36 @@ class _RangeRecorder(fx.Interpreter):
 
 
 def compute_activations_range(
-    model: nn.Module, x_calib: np.ndarray, width: int, long_width: int, out_file: Path
+    model: nn.Module,
+    x_calib: np.ndarray,
+    width: int,
+    long_width: int,
+    out_file: Path,
+    accumulator_headroom: bool = True,
+    batch_size: int = 500,
 ) -> Path:
     """Write the per-layer quantization file that Qualia-CodeGen expects.
 
     One line per graph node: name, input/activation/weights/bias bits, the matching
     power-of-two scale factors (fractional bits) and the round modes.
 
-    Products are accumulated at scale 2**(input_q + weights_q) in a ``long_width``
-    integer, so weights precision is reduced when needed to leave room for the
-    largest observed sum (with one bit of margin for partial sums).
+    Follows qualia-core's post-training defaults: minmax range setting, activation
+    ranges as the running max over the calibration data, and weights and biases
+    sharing one scale factor (qualia-core concatenates them when no separate bias
+    quantizer is configured).
+
+    Addition over qualia-core (``accumulator_headroom``): products are accumulated at
+    scale 2**(input_q + weights_q) in a ``long_width`` integer. Without
+    quantization-aware training, max-precision weights can overflow it (observed on
+    int16 / 32-bit accumulators), so weights precision is lowered when needed to
+    leave room for the largest observed sum, with one bit of margin for partial sums.
     """
     gm = fx.symbolic_trace(model)
     modules = dict(gm.named_modules())
     recorder = _RangeRecorder(gm)
     with torch.no_grad():
-        recorder.run(torch.from_numpy(x_calib))
+        for i in range(0, len(x_calib), batch_size):
+            recorder.run(torch.from_numpy(x_calib[i : i + batch_size]))
 
     lines = []
     act_q_of: dict[str, int] = {}
@@ -106,10 +124,13 @@ def compute_activations_range(
 
         weights_q, bias_q = 0, None
         if w is not None:
-            acc_bits = math.ceil(math.log2(2 * recorder.max_out[node.name] + 1e-12))
-            weights_q = min(_fractional_bits(float(w.abs().max()), width), long_width - 1 - acc_bits - input_q)
+            max_wb = max(float(w.abs().max()), float(b.abs().max()) if b is not None else 0.0)
+            weights_q = _fractional_bits(max_wb, width)
+            if accumulator_headroom:
+                acc_bits = math.floor(math.log2(2 * recorder.max_out[node.name] + 1e-12)) + 1
+                weights_q = min(weights_q, long_width - 1 - acc_bits - input_q)
             if b is not None:
-                bias_q = min(_fractional_bits(float(b.abs().max()), width), weights_q)
+                bias_q = weights_q
         act_q_of[node.name] = act_q
         lines.append(
             f"{node.name},{width},{width},{width},{width if b is not None else 'None'},"
@@ -152,7 +173,8 @@ def convert_qualia(
     mode: str,
     out_dir: str | Path,
     x_calib: np.ndarray | None = None,
-    calib_samples: int = 500,
+    calib_samples: int = 2000,
+    accumulator_headroom: bool = True,
 ) -> dict[str, Any]:
     """Generate the C library for ``model_path`` in ``mode`` and measure its footprint.
 
@@ -183,7 +205,8 @@ def convert_qualia(
     if cfg["number_type"] is int:
         calib = np.transpose(x_calib[:calib_samples], (0, 3, 1, 2)).astype(np.float32)
         range_file = compute_activations_range(
-            model, calib, cfg["width"], cfg["long_width"], c_dir / "activations_range.txt"
+            model, calib, cfg["width"], cfg["long_width"], c_dir / "activations_range.txt",
+            accumulator_headroom=accumulator_headroom,
         )
         ranges = ranges.load(range_file, input_layer_name=graph.nodes[0].layer.name)
 

@@ -17,7 +17,15 @@ Deploying a model on an MCU is a search problem: which quantization scheme, how 
 | **TFLite** | Keras | `.tflite` flatbuffer, run by the TFLite Micro interpreter | `float32`, `float16`, `dynamic_int8`, `full_int8` | flash = file size, RAM estimated from activation buffers |
 | **[Qualia-CodeGen](https://github.com/LEAT-EDGE/qualia-codegen-core)** | PyTorch | Plain C library, no runtime | `float32`, `int16`, `int8` (power-of-two fixed point) | flash and RAM measured on the compiled code |
 
-For Qualia, the per-layer fixed-point scale factors are computed from calibration data, with headroom so that accumulators (32-bit for int16, 16-bit for int8) cannot overflow. The generated C code is compiled and run on the host (Qualia's Linux demo) to measure its real accuracy.
+For Qualia, the per-layer fixed-point scale factors follow qualia-core's post-training rules (minmax range, running max of activations over calibration data, weights and biases sharing one scale factor), plus one addition: **accumulator headroom**. qualia-core relies on quantization-aware training; with post-training quantization only, max-precision weights overflow the accumulators:
+
+| Model | int16 without headroom | int16 with | int8 without | int8 with |
+|---|---|---|---|---|
+| mnist_cnn_small | overflow (crash) | 97.8 % | 81.5 % | 97.8 % |
+| mnist_cnn_medium | overflow (crash) | 98.4 % | 18.5 % | 98.5 % |
+| fashion_mlp_large | overflow (crash) | 85.8 % | 22.4 % | 86.9 % |
+
+The generated C code is compiled and run on the host (Qualia's Linux demo) to measure its real accuracy.
 
 ## Tools available to the agent
 
