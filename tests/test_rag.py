@@ -43,3 +43,26 @@ def test_budget_policy(chip_scenario: scenario_mod.Scenario) -> None:
     }
     out = chip_scenario.set_memory_budget(flash_kb=630, sram_kb=320, internal_flash=True, evidence="p.2")
     assert out["model_flash_budget_kb"] == 630 * scenario_mod.MODEL_FLASH_SHARE
+
+
+def test_grounding_accepts_verbatim_quote_with_sizes(chip_scenario: scenario_mod.Scenario) -> None:
+    chip_scenario.retrieved = ["| Memory configuration\n | 8 = 64 Kbyte flash/16 Kbyte RAM\n | B = 128 Kbyte"]
+    assert chip_scenario.check_grounding("8 = 64 Kbyte flash/16 Kbyte RAM", 64, 16, True) == []
+    # MB values count in KB
+    chip_scenario.retrieved.append("G = 1 MB of flash memory, 128 KB SRAM")
+    assert chip_scenario.check_grounding("G = 1 MB of flash memory ... 128 KB SRAM", 1024, 128, True) == []
+
+
+def test_grounding_rejects_invented_quote_or_wrong_numbers(chip_scenario: scenario_mod.Scenario) -> None:
+    chip_scenario.retrieved = ["8 = 64 Kbyte flash/16 Kbyte RAM"]
+    problems = chip_scenario.check_grounding("8 = 256 Kbyte flash/32 Kbyte RAM", 256, 32, True)
+    assert any("not found verbatim" in p for p in problems)
+    problems = chip_scenario.check_grounding("8 = 64 Kbyte flash/16 Kbyte RAM", 256, 32, True)
+    assert len(problems) == 2
+
+
+def test_rejected_declaration_leaves_budget_unset(chip_scenario: scenario_mod.Scenario) -> None:
+    out = chip_scenario.set_memory_budget(0, 512, False, "p.1", evidence_quote="made up 512 KB")
+    assert "error" in out
+    assert chip_scenario.target is None
+    assert chip_scenario.rejected_declarations == 1

@@ -4,7 +4,7 @@ An LLM agent that figures out **how to deploy a neural network on a microcontrol
 
 Built with [LangGraph](https://github.com/langchain-ai/langgraph) and open-weight LLMs (local via [Ollama](https://ollama.com), or [Groq](https://groq.com)'s free tier). No paid API needed.
 
-> Status: work in progress. Tools and agent loop work; datasheet retrieval and the systematic evaluation are being built (see roadmap).
+> Status: work in progress. Tools, agent loop and datasheet retrieval work; the systematic evaluation is being built (see roadmap).
 
 ## Why
 
@@ -69,6 +69,32 @@ python scripts/run_agent.py mnist_cnn_small tiny
 python scripts/run_agent.py mnist_cnn_small tiny --provider ollama --llm qwen2.5:7b   # fully local
 ```
 
+## Real chips: datasheet retrieval (RAG)
+
+The target can also be a real microcontroller from [`configs/chips.yaml`](configs/chips.yaml): NXP MCX N947, i.MX RT1062, LPC55S66, LPC55S69, ST STM32L476RG, STM32WL33C8 and the RAKwireless RAK3172. The agent is only given the part number. It must search the datasheets, find the memory of that exact part, and declare it with `set_memory_budget` before it may deploy. The model then gets 50 % of the usable on-chip flash and 50 % of the SRAM (or a 4 MB external flash budget when the chip has no on-chip flash).
+
+- **Retrieval**: `pdftotext -layout` keeps table rows on one line; pages are cut into overlapping chunks; BM25 (exact part numbers, units) and local `bge-small-en-v1.5` embeddings (paraphrases) are fused with reciprocal rank fusion.
+- **Grounding check**: a memory declaration must quote, verbatim, a passage the search actually returned, and the declared sizes must appear in that quote; otherwise it is rejected and the agent has to try again.
+- **Answer check**: a "feasible" answer must name a configuration the agent measured as fitting.
+
+The datasheets contain traps, which is the point. Hand-checked ground truth is in `chips.yaml`, used only for scoring:
+
+| Chip | Trap | Early runs |
+|---|---|---|
+| LPC55S69JBD100 | 640 KB flash, of which 10 KB reserved | ✅ 630 KB / 320 KB |
+| MIMXRT1062 | no on-chip flash, 1 MB SRAM | ✅ detected, external flash budget |
+| RAK3172 | the 512 KB external flash is only on the RAK3172-F | ✅ 256 KB / 64 KB |
+| STM32WL33C8 | in "C8", C is the pin count and 8 the memory (64 KB / 16 KB) | ❌ both LLMs read 256 KB / 32 KB, even with forced part-number decoding |
+
+The STM32WL33C8 failure is a misattribution, not a hallucination: the quoted table is real, but the wrong row is used. The grounding check cannot catch it, which is one of the things the evaluation will measure.
+
+Datasheets are not versioned (copyright). Download them from the vendors' sites into `data/datasheets/` (file names in `chips.yaml`), then:
+
+```bash
+python scripts/build_index.py                       # ~2 min on CPU, ~2,000 chunks
+python scripts/run_agent.py mnist_cnn_small LPC55S69JBD100
+```
+
 ## Quick start
 
 ```bash
@@ -87,6 +113,7 @@ python scripts/baseline.py               # brute-force baseline, both backends
 - [x] Qualia-CodeGen backend: PyTorch → C (float32 / int16 / int8), host-measured accuracy and memory
 - [x] Reference models and brute-force baseline
 - [x] LangGraph agent: plan → act → observe loop with tool calling and memory of past attempts
-- [ ] Retrieval over MCU datasheets (RAG) to derive memory budgets from real chips (NXP MCX N947, i.MX RT1060, LPC55S69, ST STM32L476, RAK3172 / STM32WLE5)
+- [x] Retrieval over MCU datasheets (RAG) to derive memory budgets from real chips, with grounding checks
+- [ ] Context management: shorter search results and pruning of old tool outputs (free tiers cap input tokens per minute and per day)
 - [ ] Bring your own model: a `.pt` (Qualia backend), a `.keras` (TFLite backend) or both, plus a `.npz` test set; the agent only uses the backends available for that model (supported layers: Conv1D/2D, Dense, pooling, BatchNorm, ReLU, ...)
 - [ ] Evaluation harness: success rate, iterations, tokens and time vs. baseline, across LLMs

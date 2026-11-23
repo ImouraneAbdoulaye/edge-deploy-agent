@@ -65,16 +65,26 @@ class SearchArgs(BaseModel):
 
 
 class BudgetArgs(BaseModel):
+    # First field on purpose: the model writes the decoding before the numbers it implies.
+    part_number_decoding: str = Field(
+        description="The exact part number split into its ordering-scheme fields, each with its meaning "
+        "from the datasheet, e.g. for a fictional 'XY10R4': 'XY=family, 10=line, R=pin count 64, "
+        "4=memory 128 KB flash / 32 KB RAM'. Say so if the datasheet has no ordering scheme."
+    )
     flash_kb: float = Field(description="Usable on-chip flash of this exact part in KB (0 if none)")
     sram_kb: float = Field(description="Total on-chip SRAM of this exact part in KB")
     internal_flash: bool = Field(description="False if the chip has no on-chip flash")
-    evidence: str = Field(description="Quote or summary of the datasheet lines used, with source pages")
+    evidence_quote: str = Field(
+        description="The datasheet line(s) stating these sizes for this exact part, copied verbatim from "
+        "the search results; separate non-adjacent lines with '...'. Checked automatically."
+    )
+    evidence: str = Field(description="Short explanation with the source pages")
 
 
 class AnswerArgs(BaseModel):
     feasible: bool = Field(description="True if a measured deployment satisfies all constraints")
-    backend: str | None = Field(default=None, description="Chosen backend if feasible")
-    mode: str | None = Field(default=None, description="Chosen mode if feasible")
+    backend: str = Field(description="Chosen backend if feasible, 'none' otherwise")
+    mode: str = Field(description="Chosen mode if feasible, 'none' otherwise")
     rationale: str = Field(description="Short quantitative justification")
 
 
@@ -177,8 +187,18 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
             elif name == "set_memory_budget":
                 result = scenario.set_memory_budget(**BudgetArgs(**args).model_dump())
             elif name == "submit_answer":
-                answer = AnswerArgs(**args).model_dump()
-                result = "Answer recorded."
+                submitted = AnswerArgs(**{k: v if v is not None else "none" for k, v in args.items()}).model_dump()
+                for key in ("backend", "mode"):
+                    if str(submitted[key]).lower() in ("none", "null", ""):
+                        submitted[key] = None
+                fitting = {(a["backend"], a["mode"]) for a in tried.values() if a.get("fits")}
+                if submitted["feasible"] and (submitted["backend"], submitted["mode"]) not in fitting:
+                    result = {"error": "rejected: a feasible answer must set the `backend` and `mode` fields to a "
+                              "configuration you measured as fitting, e.g. "
+                              + " or ".join(f'backend="{b}", mode="{m}"' for b, m in sorted(fitting))}
+                else:
+                    answer = submitted
+                    result = "Answer recorded."
             else:
                 result = {"error": f"unknown tool {name}"}
             messages.append(ToolMessage(json.dumps(result), tool_call_id=call["id"], name=name))
@@ -225,6 +245,7 @@ def run_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10) -> di
         "target": scenario.target_name,
         "answer": state["answer"],
         "extracted_memory": getattr(scenario, "extracted", None),
+        "rejected_declarations": getattr(scenario, "rejected_declarations", 0),
         "budget": getattr(scenario, "target", None),
         "attempts": state["attempts"],
         "num_deployments": len(state["attempts"]),

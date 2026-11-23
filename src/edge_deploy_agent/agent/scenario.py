@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,11 @@ from edge_deploy_agent.tools.inspect_model import inspect_model
 REFERENCE_CACHE = ROOT / "artifacts" / "reference_accuracy.json"
 _INDEX = None  # DatasheetIndex, loaded lazily
 DEFAULT_MAX_ACCURACY_DROP = 0.01
+
+
+def _normalize(text: str) -> str:
+    """Lowercase alphanumerics only, so quotes survive table separators and spacing."""
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
 def load_targets() -> dict[str, dict[str, Any]]:
@@ -64,6 +70,8 @@ class Scenario:
     target: dict[str, Any] | None = field(init=False)
     chip: dict[str, Any] | None = field(init=False)
     extracted: dict[str, Any] | None = field(init=False, default=None)
+    retrieved: list[str] = field(init=False, default_factory=list)
+    rejected_declarations: int = field(init=False, default=0)
     reference: dict[str, float] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -108,13 +116,43 @@ class Scenario:
         if _INDEX is None:
             _INDEX = DatasheetIndex()
         hits = _INDEX.search(query, chip=self.target_name, k=5)
+        self.retrieved.extend(h.text for h in hits)
         return [{"source": f"{h.doc} p.{h.page}", "text": h.text} for h in hits]
 
-    def set_memory_budget(self, flash_kb: float, sram_kb: float, internal_flash: bool, evidence: str) -> dict:
-        """Record the memory sizes the agent read in the datasheet and derive the model budget."""
+    def check_grounding(self, quote: str, flash_kb: float, sram_kb: float, internal_flash: bool) -> list[str]:
+        """Problems with a memory declaration: the quote must come from retrieved passages and
+        contain the declared sizes (in KB, or in MB for whole megabytes)."""
+        problems = []
+        sources = [_normalize(t) for t in self.retrieved]
+        for segment in (s for s in quote.split("...") if s.strip()):
+            if not any(_normalize(segment) in src for src in sources):
+                problems.append(f"quote not found verbatim in the search results: {segment.strip()[:120]!r}")
+        numbers = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", quote)}
+        sizes = numbers | {n * 1024 for n in numbers}
+        if internal_flash and flash_kb not in sizes:
+            problems.append(f"flash {flash_kb:g} KB does not appear in the quote")
+        if sram_kb not in sizes:
+            problems.append(f"SRAM {sram_kb:g} KB does not appear in the quote")
+        return problems
+
+    def set_memory_budget(
+        self, flash_kb: float, sram_kb: float, internal_flash: bool, evidence: str,
+        part_number_decoding: str = "", evidence_quote: str | None = None,
+    ) -> dict:
+        """Record the memory sizes the agent read in the datasheet and derive the model budget.
+
+        With ``evidence_quote``, the declaration is rejected (budget left unset) unless it is
+        grounded in the retrieved passages.
+        """
+        if evidence_quote is not None:
+            problems = self.check_grounding(evidence_quote, flash_kb, sram_kb, internal_flash)
+            if problems:
+                self.rejected_declarations += 1
+                return {"error": "declaration rejected, budget not set", "problems": problems}
         flash_budget = flash_kb * MODEL_FLASH_SHARE if internal_flash else EXTERNAL_FLASH_BUDGET_KB
         self.extracted = {
-            "flash_kb": flash_kb, "sram_kb": sram_kb, "internal_flash": internal_flash, "evidence": evidence,
+            "part_number_decoding": part_number_decoding, "flash_kb": flash_kb, "sram_kb": sram_kb,
+            "internal_flash": internal_flash, "evidence": evidence,
         }  # fmt: skip
         self.target = {
             "description": f"{self.target_name}, from datasheet",
