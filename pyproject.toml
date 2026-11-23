@@ -5,6 +5,9 @@ description = "An LLM agent that finds how to deploy a neural network on a micro
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "tensorflow==2.19.0",
+    "torch",
+    "qualia-codegen-core==2.6.0",
+    "tabulate",
     "langgraph",
     "langchain-core",
     "langchain-ollama",
