@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -14,7 +13,6 @@ from edge_deploy_agent.tools.deploy import BACKENDS, ROOT, deploy
 from edge_deploy_agent.tools.evaluate import check_constraints
 from edge_deploy_agent.tools.inspect_model import inspect_model
 
-REFERENCE_CACHE = ROOT / "artifacts" / "reference_accuracy.json"
 _INDEX = None  # DatasheetIndex, loaded lazily
 SEARCH_K = 3  # passages per search: enough for one table, small enough for free-tier token caps
 DEFAULT_MAX_ACCURACY_DROP = 0.01
@@ -29,16 +27,25 @@ def load_targets() -> dict[str, dict[str, Any]]:
     return yaml.safe_load((ROOT / "configs" / "targets.yaml").read_text())
 
 
-def reference_accuracy(model_name: str, backend: str) -> float:
-    """Accuracy of the unquantized (float32) model on ``backend``, cached on disk."""
-    cache = json.loads(REFERENCE_CACHE.read_text()) if REFERENCE_CACHE.exists() else {}
-    key = f"{model_name}/{backend}"
+DEPLOY_CACHE = ROOT / "artifacts" / "deploy_cache.json"
+
+
+def cached_deploy(model_name: str, backend: str, mode: str) -> dict[str, Any]:
+    """``deploy()`` memoized on disk. Conversion and evaluation are deterministic, so a
+    configuration only needs to be measured once; the agent is still charged for every
+    deployment it requests."""
+    cache = json.loads(DEPLOY_CACHE.read_text()) if DEPLOY_CACHE.exists() else {}
+    key = f"{model_name}/{backend}/{mode}"
     if key not in cache:
-        res = deploy(model_name, backend, "float32", ROOT / "artifacts" / "reference" / backend)
-        cache[key] = res["accuracy"]
-        REFERENCE_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        REFERENCE_CACHE.write_text(json.dumps(cache, indent=2))
+        cache[key] = deploy(model_name, backend, mode, ROOT / "artifacts" / "deployments" / backend)
+        DEPLOY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        DEPLOY_CACHE.write_text(json.dumps(cache, indent=2))
     return cache[key]
+
+
+def reference_accuracy(model_name: str, backend: str) -> float:
+    """Accuracy of the unquantized (float32) model on ``backend``."""
+    return cached_deploy(model_name, backend, "float32")["accuracy"]
 
 
 # Share of the chip's memory left to the model; the rest is for firmware, stack, buffers.
@@ -54,6 +61,12 @@ BUDGET_POLICY = (
 )
 
 
+def budget_from_memory(flash_kb: float, sram_kb: float, internal_flash: bool) -> dict[str, float]:
+    """Apply the budget policy to a chip's memory."""
+    flash = flash_kb * MODEL_FLASH_SHARE if internal_flash else EXTERNAL_FLASH_BUDGET_KB
+    return {"flash_budget_kb": round(flash, 1), "ram_budget_kb": round(sram_kb * MODEL_RAM_SHARE, 1)}
+
+
 @dataclass
 class Scenario:
     """A model to deploy on a target.
@@ -67,7 +80,6 @@ class Scenario:
     model_name: str
     target_name: str
     max_accuracy_drop: float = DEFAULT_MAX_ACCURACY_DROP
-    out_dir: Path = ROOT / "artifacts" / "agent"
     target: dict[str, Any] | None = field(init=False)
     chip: dict[str, Any] | None = field(init=False)
     extracted: dict[str, Any] | None = field(init=False, default=None)
@@ -150,15 +162,13 @@ class Scenario:
             if problems:
                 self.rejected_declarations += 1
                 return {"error": "declaration rejected, budget not set", "problems": problems}
-        flash_budget = flash_kb * MODEL_FLASH_SHARE if internal_flash else EXTERNAL_FLASH_BUDGET_KB
         self.extracted = {
             "part_number_decoding": part_number_decoding, "flash_kb": flash_kb, "sram_kb": sram_kb,
             "internal_flash": internal_flash, "evidence": evidence,
         }  # fmt: skip
         self.target = {
             "description": f"{self.target_name}, from datasheet",
-            "flash_budget_kb": round(flash_budget, 1),
-            "ram_budget_kb": round(sram_kb * MODEL_RAM_SHARE, 1),
+            **budget_from_memory(flash_kb, sram_kb, internal_flash),
         }
         return {"model_flash_budget_kb": self.target["flash_budget_kb"], "model_ram_budget_kb": self.target["ram_budget_kb"]}
 
@@ -190,7 +200,7 @@ class Scenario:
             return {"error": f"unknown backend {backend!r}, choose from {sorted(BACKENDS)}"}
         if mode not in BACKENDS[backend]["modes"]:
             return {"error": f"mode {mode!r} not available for {backend}: {list(BACKENDS[backend]['modes'])}"}
-        res = deploy(self.model_name, backend, mode, self.out_dir / backend)
+        res = cached_deploy(self.model_name, backend, mode)
         check = check_constraints(
             res["flash_bytes"], res["ram_bytes"], res["accuracy"], self.target,
             self.reference[backend], self.max_accuracy_drop,
