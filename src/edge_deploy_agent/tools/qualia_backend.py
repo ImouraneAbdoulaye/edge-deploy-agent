@@ -40,11 +40,30 @@ QUALIA_MODES: dict[str, dict[str, Any]] = {
 }  # fmt: skip
 
 
-def load_torch_model(model_path: str | Path) -> nn.Module:
-    """Load ``models/<name>.pt`` (a state_dict) into the matching architecture."""
-    model = TORCH_MODELS[Path(model_path).stem]()
-    model.load_state_dict(torch.load(model_path, weights_only=True))
+def load_torch_model(model_path: str | Path, input_shape: tuple[int, ...] | None = None) -> nn.Module:
+    """Load a PyTorch model for Qualia-CodeGen.
+
+    Reference models are stored as state_dicts and rebuilt from ``TORCH_MODELS``. Any
+    other ``.pt`` must be a full model saved with ``torch.save(model, path)``; it is
+    unpickled, so only load files you trust. Qualia needs ``model.input_shape``
+    (channels last, no batch): it is set from ``input_shape`` when missing.
+    """
+    stem = Path(model_path).stem
+    if stem in TORCH_MODELS:
+        model = TORCH_MODELS[stem]()
+        model.load_state_dict(torch.load(model_path, weights_only=True))
+    else:
+        model = torch.load(model_path, weights_only=False)
+        if not isinstance(model, nn.Module):
+            raise TypeError(f"{model_path} must contain a full nn.Module saved with torch.save(model, path)")
+    if not hasattr(model, "input_shape") and input_shape is not None:
+        model.input_shape = tuple(input_shape)
     return model.eval()
+
+
+def channels_first(x: np.ndarray) -> np.ndarray:
+    """(N, ..., C) channels-last batch -> (N, C, ...) for PyTorch."""
+    return np.moveaxis(x, -1, 1).astype(np.float32)
 
 
 def _fractional_bits(max_abs: float, width: int) -> int:
@@ -180,7 +199,7 @@ def convert_qualia(
 ) -> dict[str, Any]:
     """Generate the C library for ``model_path`` in ``mode`` and measure its footprint.
 
-    ``x_calib`` uses the Keras layout (N, H, W, C) like the rest of the project.
+    ``x_calib`` is channels last, (N, H, W, C) or (N, L, C), like the rest of the project.
     """
     from qualia_codegen_core import Converter
     from qualia_codegen_core.graph.ActivationsRange import ActivationsRange
@@ -194,7 +213,7 @@ def convert_qualia(
     if cfg["number_type"] is int and x_calib is None:
         raise ValueError(f"{mode} needs calibration data (x_calib).")
 
-    model = load_torch_model(model_path)
+    model = load_torch_model(model_path, input_shape=None if x_calib is None else x_calib.shape[1:])
     c_dir = Path(out_dir) / f"{Path(model_path).stem}_{mode}"
     shutil.rmtree(c_dir, ignore_errors=True)
     c_dir.mkdir(parents=True)
@@ -206,7 +225,7 @@ def convert_qualia(
 
     ranges = ActivationsRange()
     if cfg["number_type"] is int:
-        calib = np.transpose(x_calib[:calib_samples], (0, 3, 1, 2)).astype(np.float32)
+        calib = channels_first(x_calib[:calib_samples])
         range_file = compute_activations_range(
             model, calib, cfg["width"], cfg["long_width"], c_dir / "activations_range.txt",
             accumulator_headroom=accumulator_headroom,

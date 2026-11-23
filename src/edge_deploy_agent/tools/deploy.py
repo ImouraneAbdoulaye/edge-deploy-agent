@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from edge_deploy_agent.data import load_dataset
 from edge_deploy_agent.tools.convert import QUANT_MODES, convert_model
@@ -27,24 +30,101 @@ MODEL_DATASET = {
 
 # Modes per backend, least aggressive first.
 BACKENDS: dict[str, dict[str, Any]] = {
-    "tflite": {"modes": QUANT_MODES, "model_ext": ".keras"},
-    "qualia": {"modes": QUALIA_MODES, "model_ext": ".pt"},
+    "tflite": {"modes": QUANT_MODES},
+    "qualia": {"modes": QUALIA_MODES},
 }
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """A model to deploy: its files per backend and its data.
+
+    ``keras_path`` enables the TFLite backend, ``torch_path`` the Qualia backend.
+    Data comes either from a built-in dataset or from a ``.npz`` with ``x_test``,
+    ``y_test`` (integer labels) and optionally ``x_calib`` (channels-last inputs).
+    """
+
+    name: str
+    keras_path: Path | None = None
+    torch_path: Path | None = None
+    data_path: Path | None = None
+    dataset: str | None = None
+
+    @property
+    def backends(self) -> list[str]:
+        paths = {"tflite": self.keras_path, "qualia": self.torch_path}
+        return [b for b in BACKENDS if paths[b] is not None]
+
+    def path_for(self, backend: str) -> Path:
+        path = {"tflite": self.keras_path, "qualia": self.torch_path}[backend]
+        if path is None:
+            raise ValueError(f"backend {backend!r} unavailable for {self.name}: available {self.backends}")
+        return path
+
+    def load_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(x_calib, x_test, y_test)."""
+        if self.dataset:
+            (x_train, _), (x_test, y_test) = load_dataset(self.dataset)
+            return x_train, x_test, y_test
+        d = np.load(self.data_path)
+        x_test, y_test = d["x_test"].astype(np.float32), d["y_test"].astype(np.int64)
+        x_calib = d["x_calib"].astype(np.float32) if "x_calib" in d else x_test
+        return x_calib, x_test, y_test
+
+    def fingerprint(self) -> str:
+        """Changes whenever one of the files changes (used as a cache key)."""
+        files = [p for p in (self.keras_path, self.torch_path, self.data_path) if p is not None]
+        return "-".join(f"{p.stat().st_mtime_ns:x}" for p in files)
+
+
+_REGISTRY: dict[str, ModelSpec] = {
+    name: ModelSpec(name, MODELS_DIR / f"{name}.keras", MODELS_DIR / f"{name}.pt", dataset=dataset)
+    for name, dataset in MODEL_DATASET.items()
+}
+
+
+def register_model(
+    name: str,
+    data_path: str | Path,
+    keras_path: str | Path | None = None,
+    torch_path: str | Path | None = None,
+) -> ModelSpec:
+    """Make a user model available to the tools and the agent ("bring your own model")."""
+    if keras_path is None and torch_path is None:
+        raise ValueError("give a .keras (TFLite backend), a .pt (Qualia backend), or both")
+    paths = [Path(p) if p is not None else None for p in (keras_path, torch_path, data_path)]
+    for path in paths:
+        if path is not None and not path.exists():
+            raise FileNotFoundError(path)
+    with np.load(paths[2]) as d:
+        missing = {"x_test", "y_test"} - set(d.files)
+    if missing:
+        raise ValueError(f"{data_path} is missing {sorted(missing)}")
+    spec = ModelSpec(name, paths[0], paths[1], paths[2])
+    _REGISTRY[name] = spec
+    return spec
+
+
+def get_model(name: str) -> ModelSpec:
+    if name not in _REGISTRY:
+        raise KeyError(f"unknown model {name!r}; register it with register_model()")
+    return _REGISTRY[name]
 
 
 def deploy(model_name: str, backend: str, mode: str, out_dir: str | Path, max_samples: int = 1000) -> dict:
     """Convert ``model_name`` with ``backend``/``mode``, then measure its footprint and accuracy."""
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
-    (x_train, _), (x_test, y_test) = load_dataset(MODEL_DATASET[model_name])
-    model_path = MODELS_DIR / f"{model_name}{BACKENDS[backend]['model_ext']}"
+    spec = get_model(model_name)
+    model_path = spec.path_for(backend)
+    x_calib, x_test, y_test = spec.load_data()
 
     if backend == "tflite":
-        conv = convert_model(model_path, mode, out_dir, x_calib=x_train)
+        conv = convert_model(model_path, mode, out_dir, x_calib=x_calib)
         ev = evaluate_tflite(conv["tflite_path"], x_test, y_test, max_samples=max_samples)
         ram, ram_measured, artifact = conv["est_ram_bytes"], False, conv["tflite_path"]
     else:
-        conv = convert_qualia(model_path, mode, out_dir, x_calib=x_train)
+        conv = convert_qualia(model_path, mode, out_dir, x_calib=x_calib)
         ev = evaluate_qualia(conv["c_dir"], x_test, y_test, max_samples=max_samples)
         ram, ram_measured, artifact = conv["ram_bytes"], True, conv["c_dir"]
 

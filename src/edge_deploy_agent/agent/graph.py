@@ -156,7 +156,7 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
             ),
         ]  # fmt: skip
     llm_with_tools = llm.bind_tools(tools)
-    system = SYSTEM_PROMPT.format(options=options_description())
+    system = SYSTEM_PROMPT.format(options=options_description(getattr(scenario, "backends", None)))
 
     tool_names = {t.name for t in tools}
 

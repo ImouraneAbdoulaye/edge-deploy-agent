@@ -115,5 +115,5 @@ python scripts/baseline.py               # brute-force baseline, both backends
 - [x] LangGraph agent: plan → act → observe loop with tool calling and memory of past attempts
 - [x] Retrieval over MCU datasheets (RAG) to derive memory budgets from real chips, with grounding checks
 - [x] Context management: 3 passages per search, datasheet passages pruned from the context once the memory budget is accepted
-- [ ] Bring your own model: a `.pt` (Qualia backend), a `.keras` (TFLite backend) or both, plus a `.npz` test set; the agent only uses the backends available for that model (supported layers: Conv1D/2D, Dense, pooling, BatchNorm, ReLU, ...)
+- [x] Bring your own model: a `.pt` (Qualia backend), a `.keras` (TFLite backend) or both, plus a `.npz` test set; the agent only uses the backends available for that model
 - [ ] Evaluation harness: success rate, iterations, tokens and time vs. baseline, across LLMs

@@ -9,9 +9,10 @@ from typing import Any
 
 import yaml
 
-from edge_deploy_agent.tools.deploy import BACKENDS, ROOT, deploy
+from edge_deploy_agent.tools.deploy import BACKENDS, ROOT, deploy, get_model
 from edge_deploy_agent.tools.evaluate import check_constraints
-from edge_deploy_agent.tools.inspect_model import inspect_model
+from edge_deploy_agent.tools.inspect_model import inspect_model, inspect_torch_model
+from edge_deploy_agent.tools.qualia_backend import load_torch_model
 
 _INDEX = None  # DatasheetIndex, loaded lazily
 SEARCH_K = 3  # passages per search: enough for one table, small enough for free-tier token caps
@@ -35,7 +36,8 @@ def cached_deploy(model_name: str, backend: str, mode: str) -> dict[str, Any]:
     configuration only needs to be measured once; the agent is still charged for every
     deployment it requests."""
     cache = json.loads(DEPLOY_CACHE.read_text()) if DEPLOY_CACHE.exists() else {}
-    key = f"{model_name}/{backend}/{mode}"
+    spec = get_model(model_name)
+    key = f"{model_name}/{backend}/{mode}" + ("" if spec.dataset else f"@{spec.fingerprint()}")
     if key not in cache:
         cache[key] = deploy(model_name, backend, mode, ROOT / "artifacts" / "deployments" / backend)
         DEPLOY_CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +88,7 @@ class Scenario:
     retrieved: list[str] = field(init=False, default_factory=list)
     rejected_declarations: int = field(init=False, default=0)
     reference: dict[str, float] = field(init=False)
+    backends: list[str] = field(init=False)
 
     def __post_init__(self) -> None:
         from edge_deploy_agent.rag.index import load_chips
@@ -93,7 +96,8 @@ class Scenario:
         chips = load_chips()
         self.chip = chips.get(self.target_name)
         self.target = None if self.chip else load_targets()[self.target_name]
-        self.reference = {b: reference_accuracy(self.model_name, b) for b in BACKENDS}
+        self.backends = get_model(self.model_name).backends
+        self.reference = {b: reference_accuracy(self.model_name, b) for b in self.backends}
 
     def brief(self) -> str:
         """Task description given to the agent as the first user message."""
@@ -173,7 +177,12 @@ class Scenario:
         return {"model_flash_budget_kb": self.target["flash_budget_kb"], "model_ram_budget_kb": self.target["ram_budget_kb"]}
 
     def inspect(self) -> dict[str, Any]:
-        info = inspect_model(ROOT / "models" / f"{self.model_name}.keras")
+        spec = get_model(self.model_name)
+        if spec.keras_path is not None:
+            info = inspect_model(spec.keras_path)
+        else:
+            input_shape = spec.load_data()[1].shape[1:]
+            info = inspect_torch_model(load_torch_model(spec.torch_path, input_shape), input_shape)
         params, act = info["params"], info["peak_activation_elements"]
         return {
             "params": params,
@@ -196,8 +205,8 @@ class Scenario:
     def deploy_and_check(self, backend: str, mode: str) -> dict[str, Any]:
         if self.target is None:
             return {"error": "memory budget unknown: find it in the datasheet and call set_memory_budget first"}
-        if backend not in BACKENDS:
-            return {"error": f"unknown backend {backend!r}, choose from {sorted(BACKENDS)}"}
+        if backend not in self.backends:
+            return {"error": f"backend {backend!r} unavailable for this model, choose from {self.backends}"}
         if mode not in BACKENDS[backend]["modes"]:
             return {"error": f"mode {mode!r} not available for {backend}: {list(BACKENDS[backend]['modes'])}"}
         res = cached_deploy(self.model_name, backend, mode)
@@ -216,9 +225,11 @@ class Scenario:
         }
 
 
-def options_description() -> str:
+def options_description(backends: list[str] | None = None) -> str:
     lines = []
     for backend, cfg in BACKENDS.items():
+        if backends is not None and backend not in backends:
+            continue
         lines.append(f"- backend `{backend}`:")
         lines.extend(f"    - `{mode}`: {m['description']}" for mode, m in cfg["modes"].items())
     return "\n".join(lines)

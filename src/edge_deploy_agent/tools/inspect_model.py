@@ -11,6 +11,8 @@ import keras
 FLOAT32_BYTES = 4
 # Layers that only reinterpret a buffer's shape; TFLite Micro runs them in place.
 VIEW_LAYERS = {"Flatten", "Reshape", "InputLayer"}
+# PyTorch keeps activations as separate modules; deployed code applies them in place.
+IN_PLACE_TORCH_LAYERS = {"Identity", "Dropout", "ReLU", "ReLU6", "Sigmoid", "Tanh"}
 
 
 def load_model(model_path: str | Path) -> keras.Model:
@@ -58,5 +60,44 @@ def inspect_model(model_path: str | Path) -> dict[str, Any]:
         "params": params,
         "float32_weights_bytes": params * FLOAT32_BYTES,
         "peak_activation_elements": peak_activation_elems,
+        "layers": layers,
+    }
+
+
+def inspect_torch_model(model: Any, input_shape: tuple[int, ...]) -> dict[str, Any]:
+    """Same description as ``inspect_model`` for a PyTorch model (input shape channels last)."""
+    import torch
+
+    layers, live = [], []
+
+    def hook(module: Any, inputs: tuple, output: Any) -> None:
+        n_in = inputs[0][0].numel() if inputs and hasattr(inputs[0], "numel") else 0
+        n_out = output[0].numel()
+        if module.__class__.__name__ not in VIEW_LAYERS | IN_PLACE_TORCH_LAYERS:
+            live.append(n_in + n_out)
+        layers.append(
+            {
+                "name": module.__class__.__name__.lower(),
+                "type": module.__class__.__name__,
+                "output_shape": list(output.shape[1:]),
+                "params": sum(p.numel() for p in module.parameters(recurse=False)),
+            }
+        )
+
+    leaves = [m for m in model.modules() if not list(m.children())]
+    handles = [m.register_forward_hook(hook) for m in leaves]
+    channels_first_shape = (1, input_shape[-1], *input_shape[:-1])
+    with torch.no_grad():
+        model(torch.zeros(channels_first_shape))
+    for h in handles:
+        h.remove()
+
+    params = sum(p.numel() for p in model.parameters())
+    return {
+        "input_shape": list(input_shape),
+        "num_layers": len(layers),
+        "params": params,
+        "float32_weights_bytes": params * FLOAT32_BYTES,
+        "peak_activation_elements": max(live, default=0),
         "layers": layers,
     }
