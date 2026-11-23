@@ -96,6 +96,22 @@ class AgentState(TypedDict):
     tool_call_errors: Annotated[int, operator.add]
 
 
+PRUNED = "[search results removed from context once the memory budget was accepted]"
+
+
+def _prune_search_results(messages: list[AnyMessage]) -> list[ToolMessage]:
+    """Replacements (same message id) that drop earlier datasheet passages from the context.
+
+    Once the memory declaration has passed the grounding check, the passages are no longer
+    needed, and keeping them would resend thousands of tokens at every later step.
+    """
+    return [
+        ToolMessage(PRUNED, tool_call_id=m.tool_call_id, name=m.name, id=m.id)
+        for m in messages
+        if isinstance(m, ToolMessage) and m.name == "search_datasheet" and m.content != PRUNED
+    ]
+
+
 def _attempts_table(attempts: list[dict[str, Any]]) -> str:
     if not attempts:
         return "No deployment measured yet."
@@ -129,7 +145,7 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
         tools += [
             StructuredTool.from_function(
                 func=lambda query: None, name="search_datasheet", args_schema=SearchArgs,
-                description="Search the target chip's datasheets. Returns the 5 most relevant passages "
+                description="Search the target chip's datasheets. Returns the 3 most relevant passages "
                             "with their source page.",
             ),
             StructuredTool.from_function(
@@ -186,6 +202,8 @@ def build_agent(llm: BaseChatModel, scenario: Scenario, max_steps: int = 10):
                 result = scenario.search_datasheet(args["query"])
             elif name == "set_memory_budget":
                 result = scenario.set_memory_budget(**BudgetArgs(**args).model_dump())
+                if "error" not in result:
+                    messages.extend(_prune_search_results(state["messages"]))
             elif name == "submit_answer":
                 submitted = AnswerArgs(**{k: v if v is not None else "none" for k, v in args.items()}).model_dump()
                 for key in ("backend", "mode"):

@@ -66,7 +66,7 @@ Example runs with `openai/gpt-oss-120b` on Groq's free tier:
 ```bash
 cp .env.example .env   # then paste a free key from https://console.groq.com/keys
 python scripts/run_agent.py mnist_cnn_small tiny
-python scripts/run_agent.py mnist_cnn_small tiny --provider ollama --llm qwen2.5:7b   # fully local
+python scripts/run_agent.py mnist_cnn_small tiny --provider ollama --llm qwen2.5:3b   # fully local
 ```
 
 ## Real chips: datasheet retrieval (RAG)
@@ -114,6 +114,6 @@ python scripts/baseline.py               # brute-force baseline, both backends
 - [x] Reference models and brute-force baseline
 - [x] LangGraph agent: plan → act → observe loop with tool calling and memory of past attempts
 - [x] Retrieval over MCU datasheets (RAG) to derive memory budgets from real chips, with grounding checks
-- [ ] Context management: shorter search results and pruning of old tool outputs (free tiers cap input tokens per minute and per day)
+- [x] Context management: 3 passages per search, datasheet passages pruned from the context once the memory budget is accepted
 - [ ] Bring your own model: a `.pt` (Qualia backend), a `.keras` (TFLite backend) or both, plus a `.npz` test set; the agent only uses the backends available for that model (supported layers: Conv1D/2D, Dense, pooling, BatchNorm, ReLU, ...)
 - [ ] Evaluation harness: success rate, iterations, tokens and time vs. baseline, across LLMs

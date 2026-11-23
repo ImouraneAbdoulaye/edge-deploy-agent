@@ -16,6 +16,7 @@ from edge_deploy_agent.tools.inspect_model import inspect_model
 
 REFERENCE_CACHE = ROOT / "artifacts" / "reference_accuracy.json"
 _INDEX = None  # DatasheetIndex, loaded lazily
+SEARCH_K = 3  # passages per search: enough for one table, small enough for free-tier token caps
 DEFAULT_MAX_ACCURACY_DROP = 0.01
 
 
@@ -115,7 +116,7 @@ class Scenario:
         global _INDEX
         if _INDEX is None:
             _INDEX = DatasheetIndex()
-        hits = _INDEX.search(query, chip=self.target_name, k=5)
+        hits = _INDEX.search(query, chip=self.target_name, k=SEARCH_K)
         self.retrieved.extend(h.text for h in hits)
         return [{"source": f"{h.doc} p.{h.page}", "text": h.text} for h in hits]
 

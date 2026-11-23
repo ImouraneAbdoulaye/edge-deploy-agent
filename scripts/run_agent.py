@@ -1,7 +1,7 @@
 """Run the agent on one scenario and print its reasoning.
 
     python scripts/run_agent.py mnist_cnn_small tiny
-    python scripts/run_agent.py fashion_mlp_large medium --provider ollama --llm qwen2.5:7b
+    python scripts/run_agent.py fashion_mlp_large medium --provider ollama --llm qwen2.5:3b
 """
 
 from __future__ import annotations
