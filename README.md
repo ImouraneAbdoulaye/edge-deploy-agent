@@ -33,7 +33,7 @@ What the runs show:
 
 ![Overall architecture](docs/architecture.svg)
 
-A PNG version for slides is in [`docs/architecture.png`](docs/architecture.png); `python docs/make_architecture.py` regenerates both.
+A PNG version for slides is in [`docs/architecture.png`](docs/architecture.png).
 
 A 26-slide course built on this project, **How to build an LLM agent**, is in [`docs/slides/`](docs/slides/): [English PDF](docs/slides/how-to-build-an-llm-agent.pdf) · [French PDF](docs/slides/construire-un-agent-llm.pdf), with the editable `.pptx` files and speaker notes.
 

@@ -13,3 +13,4 @@ docs/slides/node_modules/
 # slide generator: kept locally, only the decks are published
 docs/slides/*.js
 docs/slides/package*.json
+docs/make_architecture.py
