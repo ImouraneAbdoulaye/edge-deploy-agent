@@ -35,6 +35,8 @@ What the runs show:
 
 A PNG version for slides is in [`docs/architecture.png`](docs/architecture.png); `python docs/make_architecture.py` regenerates both.
 
+A 26-slide course built on this project, **How to build an LLM agent**, is in [`docs/slides/`](docs/slides/): [English PDF](docs/slides/how-to-build-an-llm-agent.pdf) · [French PDF](docs/slides/construire-un-agent-llm.pdf), with the editable `.pptx` files and speaker notes.
+
 **Agent loop.** The LLM calls one tool at a time and sees its result. Every measured deployment is kept in the graph state and re-injected into the system prompt as a table, and a configuration already measured is served from memory instead of being redeployed. Once the memory declaration is accepted, the datasheet passages are pruned from the context, which keeps later steps small enough for free-tier token caps. Invalid tool calls, malformed arguments and text replies without a tool call are sent back to the model to correct. Generated tokens are capped per call, since small models can loop.
 
 **Datasheet retrieval.** `pdftotext -layout` keeps table rows on one line, pages are cut into overlapping chunks, and BM25 (exact part numbers, units) is fused with local `bge-small-en-v1.5` embeddings (paraphrases such as "on-chip RAM" for SRAM) by reciprocal rank fusion. The agent must decode the part number field by field from the ordering scheme, then declare flash and SRAM with a verbatim quote: the declaration is rejected unless the quote appears in the retrieved passages and contains the declared sizes. The model gets 50 % of the usable on-chip flash and 50 % of the SRAM, or a 4 MB external flash budget when the chip has none.
