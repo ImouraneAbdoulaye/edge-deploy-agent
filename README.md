@@ -5,6 +5,7 @@ An LLM agent that figures out **how to deploy a neural network on a microcontrol
 - **Agent**: [LangGraph](https://github.com/langchain-ai/langgraph) loop with tool calling, memory of measured attempts, context pruning and self-checks.
 - **Retrieval**: hybrid search (BM25 + embeddings) over MCU datasheets from NXP, ST and RAKwireless, with grounded memory extraction.
 - **Deployment**: two real backends, TFLite and [Qualia-CodeGen](https://github.com/LEAT-EDGE/qualia-codegen-core) (PyTorch → C), with flash, RAM and accuracy measured on the converted model.
+- **MCP server**: the same tools, with the same checks, for any MCP client (Claude Desktop, VS Code, other agents).
 - **Evaluation**: 30 scenarios with ground truth, scored against a brute-force baseline, across hosted and local open-weight LLMs.
 - **Free to run**: [Groq](https://groq.com)'s free tier or fully local with [Ollama](https://ollama.com).
 
@@ -71,6 +72,26 @@ The Qualia C code is compiled and run on the host (Qualia's Linux demo) to measu
 
 The TFLite RAM estimate for float32 models matches the RAM measured on Qualia's generated buffers (26.4 KB for mnist_cnn_small).
 
+## Use the tools from any MCP client
+
+`edge-deploy-mcp` serves the agent's tools over the [Model Context Protocol](https://modelcontextprotocol.io), so the LLM of any MCP client can act as the agent. A session opens a scenario (`start_scenario`), then calls `inspect_model`, `search_datasheet`, `set_memory_budget` and `deploy_and_check`; the grounding check and the memory of measured deployments apply as in the LangGraph agent. `register_model` brings your own model.
+
+```bash
+python scripts/mcp_demo.py --chip LPC55S69JBD100   # launches the server over stdio and calls its tools
+```
+
+To add it to a client such as Claude Desktop (`claude_desktop_config.json`) or VS Code (`.vscode/mcp.json`, under `"servers"`):
+
+```json
+{
+  "mcpServers": {
+    "edge-deploy-agent": {
+      "command": "/path/to/envs/edgeagent/bin/edge-deploy-mcp"
+    }
+  }
+}
+```
+
 ## Bring your own model
 
 Give a name, a `.pt` (full PyTorch model saved with `torch.save(model, path)`, enables Qualia), a `.keras` (enables TFLite) or both, and an `.npz` with `x_test`, `y_test` and optionally `x_calib` (channels last, 1D or 2D inputs). The agent is only offered the backends available for your model.
@@ -90,7 +111,7 @@ conda install -c conda-forge gcc gxx cmake ninja -y   # to build Qualia's C code
 pip install -e ".[dev]"
 cp .env.example .env                                  # paste a free key from https://console.groq.com/keys
 
-pytest                                                # 25 tests, no download
+pytest                                                # 26 tests, no download
 python scripts/make_reference_models.py               # 3 reference models, Keras + PyTorch
 python scripts/run_agent.py mnist_cnn_small tiny      # generic target
 python scripts/run_agent.py mnist_cnn_small tiny --provider ollama --llm qwen2.5:3b   # fully local
@@ -111,7 +132,8 @@ src/edge_deploy_agent/
   rag/         index.py (PDF extraction, chunking, hybrid retrieval)
   tools/       inspect_model.py, convert.py (TFLite), qualia_backend.py, evaluate.py, deploy.py
   evaluation.py  ground truth and scoring
-scripts/       run_agent.py, evaluate.py, report.py, build_index.py, baseline.py, make_reference_models.py
+  mcp_server.py  MCP server over the same tools
+scripts/       run_agent.py, evaluate.py, report.py, build_index.py, baseline.py, make_reference_models.py, mcp_demo.py
 configs/       targets.yaml (generic budgets), chips.yaml (real chips + ground truth)
 examples/byom/ bring-your-own-model example
 ```

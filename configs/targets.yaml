@@ -1,7 +1,7 @@
 # Memory budgets available to the model on each deployment target, i.e. what is
-# left after the application firmware, RTOS and buffers. These generic profiles
-# are placeholders: on day 3 the agent will derive them from real MCU datasheets
-# (RAG) instead of reading this file.
+# left after the application firmware, RTOS and buffers. With these generic profiles
+# the budgets are given to the agent; for real chips (chips.yaml) it derives them
+# from the datasheet instead.
 # Accuracy is not a target property: each scenario allows a maximum drop
 # relative to the float32 model (see check_constraints).
 tiny:

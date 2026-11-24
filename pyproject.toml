@@ -17,7 +17,11 @@ dependencies = [
     "python-dotenv",
     "sentence-transformers",
     "rank_bm25",
+    "mcp>=2.3,<3",
 ]
+
+[project.scripts]
+edge-deploy-mcp = "edge_deploy_agent.mcp_server:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
