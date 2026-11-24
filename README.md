@@ -115,3 +115,7 @@ scripts/       run_agent.py, evaluate.py, report.py, build_index.py, baseline.py
 configs/       targets.yaml (generic budgets), chips.yaml (real chips + ground truth)
 examples/byom/ bring-your-own-model example
 ```
+
+## License
+
+[MIT](LICENSE). Qualia-CodeGen, used as a dependency for the C backend, is distributed under its own license (AGPL-3.0).
