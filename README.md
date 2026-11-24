@@ -14,16 +14,19 @@ Each scenario pairs a model with a target. **Generic** targets give the memory b
 
 | LLM | Scenarios | Runs | Correct | Chip memory extracted | Deployments (agent / brute force) | Tokens / run |
 |---|---|---|---|---|---|---|
-| gpt-oss-120b (Groq) | generic | 4 | 100 % | | 0.8 / 3.2 | 4 k |
-| gpt-oss-20b (Groq) | generic | 9 | 100 % | | 0.8 / 3.9 | 4 k |
-| gpt-oss-20b (Groq) | chip | 4 | 100 % | 50 % | 1.8 / 1.8 | 28 k |
-| qwen2.5:3b (local) | generic | 27 | 74 % | | 1.7 / 3.9 | 17 k |
-| qwen2.5:3b (local) | chip | 63 | 8 % | 2 % | 0.2 / 3.8 | 52 k |
+| gpt-oss-120b (Groq) | generic | 9 / 9 | 100 % | | 0.7 / 3.9 | 4 k |
+| gpt-oss-120b (Groq) | chip | 5 / 21 | 40 % | 67 % | 0.7 / 1.0 | 29 k |
+| gpt-oss-20b (Groq) | generic | 9 / 9 | 100 % | | 0.8 / 3.9 | 4 k |
+| gpt-oss-20b (Groq) | chip | 10 / 21 | 80 % | 44 % | 0.9 / 3.3 | 31 k |
+| qwen2.5:3b (local) | generic | 27 / 27 | 74 % | | 1.7 / 3.9 | 17 k |
+| qwen2.5:3b (local) | chip | 63 / 63 | 8 % | 2 % | 0.2 / 3.8 | 52 k |
+
+The gpt-oss chip runs are still being completed within Groq's free-tier daily quotas; runs that failed on a provider error count as wrong.
 
 What the runs show:
 
 - **With a given budget, the gpt-oss models are right every time with 4 to 5 times fewer deployments than brute force.** They estimate weight and activation sizes first, deploy only what can fit, and conclude "infeasible" without deploying at all when even 8-bit weights exceed the flash.
-- **A correct answer can hide a wrong reading of the datasheet.** gpt-oss-20b read the STM32WL33C8 as 256 KB / 32 KB (the "CC" variant) and the LPC55S66 with the LPC55S69's figures, yet picked configurations that also fit the true budgets. Scoring memory extraction separately is what exposes this.
+- **A correct answer can hide a wrong reading of the datasheet.** On real chips gpt-oss-20b answers 80 % of runs correctly but reads the memory right in only 44 %: it took the STM32WL33C8 for the 256 KB / 32 KB "CC" variant and the LPC55S66 for the LPC55S69, yet picked configurations that also fit the true budgets, and once concluded "infeasible" without declaring the memory at all. Scoring memory extraction separately is what exposes this.
 - **Telling apart part numbers that share one datasheet is the hardest case for every model.** In "STM32WL33**C8**", `C` is the pin count and `8` the memory size (64 KB / 16 KB); all models used the `C` row of the ordering table. The quote they give is real, so the grounding check passes: the error is a misattribution, not a hallucination.
 - **Model size shows directly in tool use.** The 3B model handles simple choices but cannot fill the 6-field memory declaration correctly, so it rarely gets to deploy on real chips.
 
