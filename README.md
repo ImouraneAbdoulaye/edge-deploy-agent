@@ -21,7 +21,7 @@ Each scenario pairs a model with a target. **Generic** targets give the memory b
 | qwen2.5:3b (local) | generic | 27 / 27 | 74 % | | 1.7 / 3.9 | 17 k |
 | qwen2.5:3b (local) | chip | 63 / 63 | 8 % | 2 % | 0.2 / 3.8 | 52 k |
 
-The gpt-oss chip runs are still being completed within Groq's free-tier daily quotas; runs that failed on a provider error count as wrong.
+The gpt-oss chip runs stopped there: Groq's free tier limits the number of tokens per day. Runs that failed on a provider error count as wrong.
 
 What the runs show:
 
